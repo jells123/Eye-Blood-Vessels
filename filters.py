@@ -60,8 +60,11 @@ def confusion_matrix(img, org, mask):
 
 def fun(im, maska):
     imgray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+    # imgray = cv2.resize(imgray, dsize=(0, 0), fx=0.25, fy=0.25)
 
     maska = cv2.cvtColor(maska, cv2.COLOR_BGR2GRAY)
+    # maska = cv2.resize(maska, dsize=(0, 0), fx=0.25, fy=0.25)
+
     maska = maska/255.0
     imgray = np.asarray(np.multiply(imgray, maska), dtype=np.uint8)
 
@@ -89,11 +92,11 @@ def fun(im, maska):
     # plt.imshow(imgray, cmap='gray')
 
     imgray = cv2.medianBlur(imgray, 11)
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
-    # imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    imgray = cv2.morphologyEx(imgray, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+    imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
 
     imgray = cv2.medianBlur(imgray, 11)
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
     imgray = cv2.medianBlur(imgray, 11)
     # imgray = cv2.fastNlMeansDenoising(imgray)
 
@@ -117,40 +120,40 @@ def fun(im, maska):
 
 
 def load():
-    images = [f for f in listdir(os.getcwd() + '//test/img/') if isfile(join(os.getcwd() + '//test/img/', f))]
-    manual = [f for f in listdir(os.getcwd() + '//test/res/') if isfile(join(os.getcwd() + '//test/res/', f))]
-    masks = [f for f in listdir(os.getcwd() + '//test/mask/') if isfile(join(os.getcwd() + '//test/mask/', f))]
+    images = [f for f in listdir(os.getcwd() + '//all/images/') if isfile(join(os.getcwd() + '//all/images/', f))]
+    manual = [f for f in listdir(os.getcwd() + '//all/manual1/') if isfile(join(os.getcwd() + '//all/manual1/', f))]
+    masks = [f for f in listdir(os.getcwd() + '//all/mask/') if isfile(join(os.getcwd() + '//all/mask/', f))]
 
-    plt.figure(figsize=(20, 50))
+    # plt.figure(figsize=(20, 50))
 
     for i in range(len(images)):
-        im = cv2.imread(os.getcwd() + '//test/img/' + images[i])
-        mask = cv2.imread(os.getcwd() + '//test/mask/' + masks[i])
+        im = cv2.imread(os.getcwd() + '//all/images/' + images[i])
+        mask = cv2.imread(os.getcwd() + '//all/mask/' + masks[i])
 
-        org = cv2.imread(os.getcwd() + '//test/res/' + manual[i])
+        org = cv2.imread(os.getcwd() + '//all/manual1/' + manual[i])
         org = cv2.cvtColor(org, cv2.COLOR_BGR2GRAY)
+        org = cv2.resize(org, dsize=(0, 0), fx=0.25, fy=0.25)
 
         result = fun(im, mask)
+        result = cv2.resize(result, dsize=(0, 0), fx=0.25, fy=0.25)
+
+        mask = cv2.resize(mask, dsize=(0, 0), fx=0.25, fy=0.25)
+
+        cv2.imwrite(images[i].split(".")[0] + "-filter-res.png", result)
         # result = extract_bv(im)
 
-        print(str(i + 1) + ". RMSE: " + str(mean_squared_error(result, org)))
+        print(images[i].split(".")[0] + "\nRMSE: " + str(mean_squared_error(result, org)))
         confusion_matrix(result, org, mask)
 
-        if i == 0:
-            cnn = cv2.imread(os.getcwd() + '//res1.png')
-            cnn = cv2.cvtColor(cnn, cv2.COLOR_BGR2GRAY)
-            print('TUTAJ!!!!!!!')
-            confusion_matrix(cnn, org, mask)
+        # plt.subplot(len(images), 2, i*2 + 1)
+        # plt.imshow(org, cmap='gray')
+        # plt.xticks([]), plt.yticks([])
 
-        plt.subplot(len(images), 2, i*2 + 1)
-        plt.imshow(org, cmap='gray')
-        plt.xticks([]), plt.yticks([])
+        # plt.subplot(len(images), 2, i*2 + 2)
+        # plt.imshow(result, cmap='gray')
+        # plt.xticks([]), plt.yticks([])
 
-        plt.subplot(len(images), 2, i*2 + 2)
-        plt.imshow(result, cmap='gray')
-        plt.xticks([]), plt.yticks([])
-
-    plt.savefig("result.pdf")
+    # plt.savefig("result.pdf")
 
 
 load()
