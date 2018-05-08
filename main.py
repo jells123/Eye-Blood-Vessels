@@ -1,156 +1,277 @@
-from __future__ import division
-
 import os
-from os import listdir
-from os.path import isfile, join
+import numpy as np
+import cv2 as cv
+import random
+import matplotlib.pyplot as plt
+from keras import Model, Input
+from keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
 
-import cv2
-from matplotlib import pylab as plt
-from pylab import *
-from sklearn.metrics import mean_squared_error
+import keras
+from keras.utils import to_categorical
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten, core, Convolution2D, merge, MaxPool2D
+from keras.layers import Conv2D, MaxPooling2D, UpSampling2D, concatenate
+from keras.layers.normalization import BatchNormalization
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler
+from keras import backend as K
+#K.set_image_dim_ordering('th')  # Theano dimension ordering in this code
 
-warnings.simplefilter("ignore")
-
-
-def gamma_correction(img, correction):
-    img = img/255.0
-    img = cv2.pow(img, correction)
-    return np.uint8(img*255)
-
-
-def confusion_matrix(img, org, mask):
-    if img.shape != org.shape:
-        org = cv2.resize(org, (img.shape[1], img.shape[0]))
-
-    TP = 0
-    FP = 0
-    FN = 0
-    TN = 0
-
-    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-    mask = mask / 255.0
-
-    if np.max(img) > 1:
-        img = img / 255.0
-    if np.max(org) > 1:
-        org = org / 255.0
-
-    for i in range(len(img)):
-        for j in range(len(img[0])):
-            if mask[i, j] > 0:
-                if img[i, j] > 0 and org[i, j] > 0:
-                    TP += 1
-                elif img[i, j] == 0 and org[i, j] == 0:
-                    TN += 1
-                elif img[i, j] == 0 and org[i, j] > 0:
-                    FP += 1
-                elif img[i, j] > 0 and org[i, j] == 0:
-                    FN += 1
-                else:
-                    print("Sth is no yes\n")
-                    print(img[i, j])
-                    print(org[i, j])
-                    return
-
-    print('Macierz pomylek:\n{} TP\t{} FP\n{} FN\t{} TN'.format(TP, FP, FN, TN))
-    print('Precision: %5.3f' % (TP / (TP + FP)))
-    print('Recall: %5.3f' % (TP / (TP + FN)))
-    print('Accuracy: %5.3f\n' % ((TP + TN) / (TP + FP + TN + FN)))
+import helpers
 
 
-def fun(im, maska):
-    imgray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+eyes_path = os.getcwd() + "/images" + "/"
+vessels_path = os.getcwd() + "/vessels" + "/"
+masks_path = os.getcwd() + "/mask" + "/"
 
-    maska = cv2.cvtColor(maska, cv2.COLOR_BGR2GRAY)
-    maska = maska/255.0
-    imgray = np.asarray(np.multiply(imgray, maska), dtype=np.uint8)
+samples_count = 200000
+no_class_percentage = 0.65
+valid_size_percentage = 0.15
 
-    # plt.figure(figsize=(10, 30))
-    # imgray = cv2.medianBlur(imgray, 5)
+sample_size = 49
+channels = 1
 
-    imgray = cv2.GaussianBlur(imgray, (5, 5), 0)
+resize_scale = 0.25
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    imgray = clahe.apply(imgray)
+pad_size = int( np.floor(sample_size/2.0) )
 
-    # imgray = gamma_correction(imgray, 0.9)
-    # plt.subplot(5, 1, 1)
-    # plt.imshow(imgray, cmap='gray')
+def convert_to_training_data(train_x, train_y):
+    train_x = train_x.reshape(-1, sample_size, sample_size, 1)
+    train_y_onehot = to_categorical(train_y)
+    train_x, valid_x, train_label, valid_label = train_test_split(train_x, train_y_onehot,
+                                                                  test_size=valid_size_percentage,
+                                                                  random_state=13,
+                                                                  shuffle=True)
+    print(train_x.shape, valid_x.shape, train_label.shape)
+    return train_x, valid_x, train_label, valid_label
 
-    imgray = cv2.adaptiveThreshold(imgray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 5)
+def gather_data():
+    eyes = os.listdir(eyes_path)
+    vessels = os.listdir(vessels_path)
+    masks = os.listdir(masks_path)
 
-    # plt.subplot(5, 1, 2)
-    # plt.imshow(imgray, cmap='gray')
+    yes_per_example = int ( samples_count / len(eyes) * (1.0 - no_class_percentage) )
+    no_per_example = int ( samples_count / len(eyes) * no_class_percentage )
+    N = (yes_per_example+no_per_example) * len(eyes)
+#    train_x = np.empty((N, sample_size, sample_size, channels), dtype=np.float32)
+    train_x = np.empty((N, sample_size, sample_size), dtype=np.float32)
+#    train_x = np.empty((N, channels, sample_size, sample_size), dtype=np.float32)
+    train_y = np.empty(N, dtype=np.uint8)
 
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+    idx = 0
+    print("Loading data...")
+    for e in eyes:
+        print("-> {}".format(e))
+        name = e[:e.lower().find(".jpg")]
+        v = helpers.find_in(name, vessels)
+        m = helpers.find_in(name, masks)
 
-    # plt.subplot(5, 1, 3)
-    # plt.imshow(imgray, cmap='gray')
+        eye_img = helpers.load_gray_img(eyes_path + e)
+        vessel_img = helpers.load_gray_img(vessels_path + v)
+        mask_img = helpers.load_gray_img(masks_path + m)
 
-    imgray = cv2.medianBlur(imgray, 11)
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
-    # imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+        eye_img = cv.resize(eye_img, dsize=(0, 0), fx=resize_scale, fy=resize_scale)
+        vessel_img = cv.resize(vessel_img, dsize=(0, 0), fx=resize_scale, fy=resize_scale)
+        mask_img = cv.resize(mask_img, dsize=(0, 0), fx=resize_scale, fy=resize_scale)
 
-    imgray = cv2.medianBlur(imgray, 11)
-    imgray = cv2.morphologyEx(imgray, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
-    imgray = cv2.medianBlur(imgray, 11)
-    # imgray = cv2.fastNlMeansDenoising(imgray)
+        vessel_img[vessel_img > 0.0] = 1.0
+        mask_img[mask_img > 0.0] = 1.0
+        #for binary imgs
 
-    # plt.subplot(5, 1, 4)
-    # plt.imshow(cv2.bitwise_not(imgray.copy()), cmap='gray')
+        eye_pad = helpers.pad_img(eye_img, pad_size)
+        vessel_pad = helpers.pad_img(vessel_img, pad_size)
 
-    black = np.ones(shape=imgray.shape, dtype=np.float32) * 255
-    img, contours, hierarchy = cv2.findContours(imgray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        yes, no = 0, 0
 
-    for cnt in contours:
-        # if cv2.contourArea(cnt) <= 200:
-        # if len(cnt) > size:
-        cv2.drawContours(black, [cnt], -1, 0, -1)
+        while yes < yes_per_example or no < no_per_example:
+            x, y = random.randint(0, eye_img.shape[0] - 1), random.randint(0, eye_img.shape[1] - 1)
+            if mask_img[x][y] != 0.0:
+                x += pad_size
+                y += pad_size
+                sample = eye_pad[x-pad_size:x+pad_size+1, y-pad_size:y+pad_size+1]
+#                sample = sample.reshape(-1, sample_size, sample_size, 1)
+#                sample = eye_pad[x-pad_size:x+pad_size, y-pad_size:y+pad_size, :]
+                train_x[idx] = sample
+                if vessel_pad[x][y] == 0.0 and no < no_per_example:
+                    train_y[idx] = 0 # NO class
+                    no += 1
+                    idx += 1
+                elif vessel_pad[x][y] != 0.0 and yes < yes_per_example:
+                    train_y[idx] = 1 # YES class
+                    yes += 1
+                    idx += 1
 
-    # plt.subplot(5, 1, 5)
-    # plt.imshow(black, cmap='gray')
+    return train_x, train_y
 
-    # plt.savefig('try.pdf')
+def get_model_1(input_shape, num_classes):
+    model = Sequential()
 
-    return cv2.bitwise_not(imgray)
+    model.add(Conv2D(48, kernel_size=(3, 3),activation='relu',padding='same',input_shape=input_shape))
+    model.add(BatchNormalization())
+    model.add(Conv2D(48, kernel_size=(3, 3),activation='relu',padding='same',input_shape=input_shape))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D((2, 2),padding='same'))
+    model.add(Dropout(0.2))
 
+    model.add(Conv2D(64, (3, 3), activation='relu',padding='same'))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2),padding='same'))
+    model.add(Dropout(0.2))
 
-def load():
-    images = [f for f in listdir(os.getcwd() + '//test/img/') if isfile(join(os.getcwd() + '//test/img/', f))]
-    manual = [f for f in listdir(os.getcwd() + '//test/res/') if isfile(join(os.getcwd() + '//test/res/', f))]
-    masks = [f for f in listdir(os.getcwd() + '//test/mask/') if isfile(join(os.getcwd() + '//test/mask/', f))]
+    model.add(Conv2D(128, (3, 3), activation='relu', padding='same'))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2), padding='same'))
+    model.add(Dropout(0.2))
 
-    plt.figure(figsize=(20, 50))
+    model.add(Flatten())
+    model.add(Dense(360, activation='relu'))
+    model.add(Dropout(0.25))
+    model.add(Dense(720, activation='relu'))
+    model.add(Dropout(0.45))
+    model.add(Dense(num_classes, activation='softmax'))
 
-    for i in range(len(images)):
-        im = cv2.imread(os.getcwd() + '//test/img/' + images[i])
-        mask = cv2.imread(os.getcwd() + '//test/mask/' + masks[i])
+    model.compile(loss=keras.losses.categorical_crossentropy,
+                          optimizer=keras.optimizers.Adam(),
+                          metrics=['accuracy'])
 
-        org = cv2.imread(os.getcwd() + '//test/res/' + manual[i])
-        org = cv2.cvtColor(org, cv2.COLOR_BGR2GRAY)
+    return model
 
-        result = fun(im, mask)
-        # result = extract_bv(im)
+def get_model_2(input_shape, num_classes):
+    model = Sequential()
 
-        print(str(i + 1) + ". RMSE: " + str(mean_squared_error(result, org)))
-        confusion_matrix(result, org, mask)
+    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same', input_shape=input_shape))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D((2, 2), padding='same'))
+    model.add(Dropout(0.2))
 
-        if i == 0:
-            cnn = cv2.imread(os.getcwd() + '//res1.png')
-            cnn = cv2.cvtColor(cnn, cv2.COLOR_BGR2GRAY)
-            print('TUTAJ!!!!!!!')
-            confusion_matrix(cnn, org, mask)
+    model.add(Conv2D(80, (3, 3), activation='relu', padding='same'))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2), padding='same'))
+    model.add(Dropout(0.2))
 
-        plt.subplot(len(images), 2, i*2 + 1)
-        plt.imshow(org, cmap='gray')
-        plt.xticks([]), plt.yticks([])
+    model.add(Conv2D(128, (3, 3), activation='relu', padding='same'))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2), padding='same'))
+    model.add(Dropout(0.2))
 
-        plt.subplot(len(images), 2, i*2 + 2)
-        plt.imshow(result, cmap='gray')
-        plt.xticks([]), plt.yticks([])
+    model.add(Flatten())
+    model.add(Dense(360, activation='relu'))
+    model.add(Dropout(0.25))
+    model.add(Dense(720, activation='relu'))
+    model.add(Dropout(0.45))
+    model.add(Dense(num_classes, activation='softmax'))
 
-    plt.savefig("result.pdf")
+    model.compile(loss=keras.losses.categorical_crossentropy,
+                  optimizer=keras.optimizers.Adam(),
+                  metrics=['accuracy'])
 
+    return model
 
-load()
+def get_model_unet(input_shape, num_classes):
+    inputs = Input(shape=(1, sample_size, sample_size))
+
+    conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
+    conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv1)
+    pool1 = MaxPooling2D(pool_size=(2, 2), padding='same')(conv1)
+
+    conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(pool1)
+    conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv2)
+    pool2 = MaxPooling2D(pool_size=(2, 2), padding='same')(conv2)
+
+    conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(pool2)
+    conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(conv3)
+    pool3 = MaxPooling2D(pool_size=(2, 2), padding='same')(conv3)
+
+    conv4 = Conv2D(256, (3, 3), activation='relu', padding='same')(pool3)
+    conv4 = Conv2D(256, (3, 3), activation='relu', padding='same')(conv4)
+    pool4 = MaxPooling2D(pool_size=(2, 2), padding='same')(conv4)
+
+    conv5 = Conv2D(512, (3, 3), activation='relu', padding='same')(pool4)
+    conv5 = Conv2D(512, (3, 3), activation='relu', padding='same')(conv5)
+
+    conv5 = Dropout(0.5)(conv5)
+
+    up6 = merge([UpSampling2D(size=(2, 2))(conv5), conv4], mode='concat', concat_axis=1)
+
+    conv6 = Conv2D(256, (3, 3), activation='relu', padding='same')(up6)
+    conv6 = Conv2D(256, (3, 3), activation='relu', padding='same')(conv6)
+
+    up7 = merge([UpSampling2D(size=(2, 2))(conv6), conv3], mode='concat', concat_axis=1)
+
+    conv7 = Conv2D(128, (3, 3), activation='relu', padding='same')(up7)
+    conv7 = Conv2D(128, (3, 3), activation='relu', padding='same')(conv7)
+
+    up8 = merge([UpSampling2D(size=(2, 2))(conv7), conv2], mode='concat', concat_axis=1)
+
+    conv8 = Conv2D(64, (3, 3), activation='relu', padding='same')(up8)
+    conv8 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv8)
+    up9 = merge([UpSampling2D(size=(2, 2))(conv8), conv1], mode='concat', concat_axis=1)
+
+    conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(up9)
+    conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv9)
+
+    conv10 = Conv2D(1, (1, 1), activation='sigmoid')(conv9)
+
+    model = Model(input=inputs, output=conv10)
+    model.compile(loss=keras.losses.categorical_crossentropy,
+                  optimizer=keras.optimizers.Adam(),
+                  metrics=['accuracy'])
+
+    return model
+
+def get_model_kaggle(input_shape, num_classes):
+    model = Sequential()
+
+    model.add(Conv2D(filters=32, kernel_size=(3, 3), activation='relu',
+                     input_shape=input_shape))
+    model.add(BatchNormalization())
+    model.add(Conv2D(filters=32, kernel_size=(3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    # model.add(Conv2D(filters = 16, kernel_size = (3, 3), activation='relu'))
+    # model.add(BatchNormalization())
+    model.add(MaxPool2D(strides=(2, 2)))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(filters=64, kernel_size=(3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    model.add(Conv2D(filters=64, kernel_size=(3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    # model.add(Conv2D(filters = 32, kernel_size = (3, 3), activation='relu'))
+    # model.add(BatchNormalization())
+    model.add(MaxPool2D(strides=(2, 2)))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(filters=128, kernel_size=(3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    model.add(Conv2D(filters=128, kernel_size=(3, 3), activation='relu'))
+    model.add(BatchNormalization())
+    # model.add(Conv2D(filters = 32, kernel_size = (3, 3), activation='relu'))
+    # model.add(BatchNormalization())
+    model.add(MaxPool2D(strides=(2, 2)))
+    model.add(Dropout(0.25))
+
+    model.add(Flatten())
+    model.add(Dense(512, activation='relu'))
+    model.add(Dropout(0.25))
+    model.add(Dense(1024, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(num_classes, activation='softmax'))
+
+    model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=1e-4), metrics=["accuracy"])
+
+    return model
+
+train_x, train_y = gather_data()
+train_x, valid_x, train_label, valid_label = convert_to_training_data(train_x, train_y)
+model = get_model_kaggle(train_x[0].shape, num_classes=2)
+filepath = os.getcwd() + "/models/" + "0.25gray-200k+128-{epoch:02d}-{val_acc:.2f}.hdf5"
+checkpoint = ModelCheckpoint(filepath, monitor='val_acc',
+                             verbose=1, save_best_only=True, mode='max')
+model.summary()
+
+annealer = LearningRateScheduler(lambda x: 1e-3 * 0.9 ** x)
+train = model.fit(train_x, train_label, batch_size=32, epochs=50,
+                  verbose=1, callbacks=[checkpoint, annealer],
+                  validation_data=(valid_x, valid_label),
+                  shuffle=True
+                 )
